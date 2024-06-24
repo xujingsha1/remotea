@@ -1,0 +1,209 @@
+# -*- coding: utf-8 -*-
+# Copyright (C) 2021 Yin Shi
+#
+# This file uses DOLFIN.
+#
+# DOLFIN is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# DOLFIN is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU Lesser General Public License for more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with DOLFIN. If not, see <http://www.gnu.org/licenses/>.
+#
+# Weak forms for the phase-field model of a VO2 2-terminal device connected 
+# to a direct voltage source with a resistor in series. Considered the 
+# parasitic capacitance of the circuit.
+#
+# Compile this form with FFC: ffc -l dolfin -O -f split <file-name>
+# Use option -f quadrature_degree=6 to modify the quadrature degrees of
+# all integrations in the ufl file.
+
+#----------------------------------------------------------------
+# Define finite element and solution functions
+#----------------------------------------------------------------
+cell = triangle
+
+P1 = FiniteElement("Lagrange", cell, 1)
+#VE = VectorElement("Lagrange", cell, 1)
+R0 = FiniteElement("R", cell, 0)
+ME = MixedElement(P1, P1, P1, P1, P1, P1, R0)
+
+du = TrialFunction(ME)
+v_1, v_2, v_3, v_4, v_5, v_6, v_7 = TestFunctions(ME)
+
+u   = Coefficient(ME)  # current solution
+u_n  = Coefficient(ME)  # solution from previous converged step
+
+# Split mixed functions
+eta,   mu,   gamma_e,  gamma_h,  phi,   T,   curr = split(u)
+eta_n, mu_n, gamma_en, gamma_hn, phi_n, T_n, curr_n = split(u_n)
+
+#----------------------------------------------------------------
+# Define computational parameters
+#----------------------------------------------------------------
+dt = Constant(cell) # time step
+Lx = Constant(cell)
+Lz = Constant(cell)
+
+#----------------------------------------------------------------
+# Define physical property parameters
+#----------------------------------------------------------------
+KB = Constant(cell)
+ECHARGE = Constant(cell)
+TC = Constant(cell)
+T1 =  Constant(cell)   # 0.81361
+AN1 = Constant(cell)  # 34.867
+AN2 = Constant(cell)
+AN3 = Constant(cell)
+T2 = Constant(cell)
+AU1 = Constant(cell)
+AU2 = Constant(cell)
+AU3 = Constant(cell)
+GNU1 = Constant(cell)
+GNU2 = Constant(cell)
+GNU3 = Constant(cell)
+CHI = Constant(cell)
+KN = Constant(cell)
+KAPPAN = Constant(cell)
+KU = Constant(cell)
+KAPPAU = Constant(cell)
+NC = Constant(cell)
+NV = Constant(cell)
+MEC = Constant(cell)
+MEA = Constant(cell)
+MHC = Constant(cell)
+MHA = Constant(cell)
+KEH0 = Constant(cell)
+PERMITTIVITY = Constant(cell)
+CPV = Constant(cell)
+THETA = Constant(cell)
+HTRAN = Constant(cell)
+CHP_IN = Constant(cell)   # Intrinsic chemical potential
+
+#----------------------------------------------------------------
+# Define boundary and initial condition parameters
+#----------------------------------------------------------------
+Ts = Constant(cell)
+delV = Constant(cell)                  # V
+Resistor = Constant(cell)  # Ohm / [Chosen resistance unit]
+Capacitor = Constant(cell)
+etas = Constant(cell)
+mus = Constant(cell)
+deff = Constant(cell)
+nitsche_eps = Constant(cell)  # For Nitsche's trick dealing with nonstandard boundary conditions
+
+Tcvar = Coefficient(P1)
+
+#----------------------------------------------------------------
+# Define variational forms
+#----------------------------------------------------------------
+SQRTPI = 1.772453851
+
+def dfb_deta(T, eta, mu):
+    return AN1*(T - T1 - Tcvar)/TC*eta + AN2*eta**3 + AN3*eta**5 + GNU1*mu \
+    - GNU2*eta*mu**2 + 1.5*GNU3*eta**2*mu
+
+def dfb_dmu(T, eta, mu):
+    return AU1*(T - T2 - Tcvar)/TC*mu + AU2*mu**3 + AU3*mu**5 + GNU1*eta \
+    - GNU2*eta**2*mu + 0.5*GNU3*eta**3
+
+def Fermi(gamma):
+    return 1 / (exp(-gamma) + 3*SQRTPI/4*(4 + gamma**2)**(-0.75))
+
+def dFermi(gamma):   # Derivative of Fermi(gamma)
+    return Fermi(gamma)**2 * (exp(-gamma) + 9*SQRTPI/8 \
+    *(4 + gamma**2)**(-1.75)*gamma)
+
+nd_e = NC*Fermi(gamma_e)    # Electron density
+nd_h = NV*Fermi(gamma_h)    # Hole density
+
+j_ex = -nd_e*(MEA/ECHARGE)*(KB*T*gamma_e.dx(0) + gamma_e*KB*T.dx(0) \
+                          + CHI*mu*mu.dx(0) - ECHARGE*phi.dx(0))
+j_ey = -nd_e*(MEC/ECHARGE)*(KB*T*gamma_e.dx(1) + gamma_e*KB*T.dx(1) \
+                          + CHI*mu*mu.dx(1) - ECHARGE*phi.dx(1))
+j_e = as_vector([j_ex, j_ey])   # Electron flux
+
+j_hx = -nd_h*(MHA/ECHARGE)*(KB*T*gamma_h.dx(0) + gamma_h*KB*T.dx(0) \
+                          + CHI*mu*mu.dx(0) + ECHARGE*phi.dx(0))
+j_hy = -nd_h*(MHC/ECHARGE)*(KB*T*gamma_h.dx(1) + gamma_h*KB*T.dx(1) \
+                          + CHI*mu*mu.dx(1) + ECHARGE*phi.dx(1))
+j_h = as_vector([j_hx, j_hy])   # Hole flux
+
+nd_in = NC*Fermi(-(CHI*mu**2/2 - CHP_IN)/(KB*T))   # Intrinsic carrier density
+nd_eeq = NC*Fermi(-(CHI*mu**2/2 - ECHARGE*phi - CHP_IN)/(KB*T))  # Equilibrium electron density
+nd_heq = NV*Fermi(-(CHI*mu**2/2 + ECHARGE*phi + CHP_IN)/(KB*T))  # Equilibrium hole density
+
+Jy = ECHARGE*(j_hy - j_ey)    # y component of the total current
+
+dUdt = dfb_deta(0.0, eta, mu)*(eta - eta_n)/dt + dfb_dmu(0.0, eta, mu)*(mu - mu_n)/dt
+
+# Define forms
+Feta = ((eta - eta_n)/dt + 2.0 * KN*dfb_deta(T, eta, mu))*v_1*dx \
+       + (KN*KAPPAN)*dot(grad(eta), grad(v_1))*dx \
+       - (KN*KAPPAN/deff)*(etas - eta)*v_1*ds   # Boundary condition: interact with surroundings having an effective order parameter of etas
+
+Fmu = ((mu - mu_n)/dt + 2.0 * KU*(dfb_dmu(T, eta, mu) \
+       + CHI*mu*(nd_e + nd_h - 2*nd_in)))*v_2*dx + (KU*KAPPAU)*dot(grad(mu), grad(v_2))*dx \
+      - (KU*KAPPAU/deff)*(mus - mu)*v_2*ds  # Boundary condition: interact with surroundings having an effective order parameter of mus
+
+Fe = (NC*dFermi(gamma_e)*(gamma_e - gamma_en)/dt \
+      - KEH0*mu**2*(nd_eeq*nd_heq - nd_e*nd_h))*v_3*dx - dot(j_e, grad(v_3))*dx
+
+Fh = (NV*dFermi(gamma_h)*(gamma_h - gamma_hn)/dt \
+      - KEH0*mu**2*(nd_eeq*nd_heq - nd_e*nd_h))*v_4*dx - dot(j_h, grad(v_4))*dx
+
+Fphi = dot(grad(phi), grad(v_5))*dx - (ECHARGE/PERMITTIVITY)*(nd_h - nd_e)*v_5*dx
+
+FT = (CPV*(T - T_n)/dt \
+      - ECHARGE*((j_hx - j_ex)**2/(nd_e*MEA + nd_h*MHA) \
+                 + (j_hy - j_ey)**2/(nd_e*MEC + nd_h*MHC)) \
+      + dUdt \
+      + (HTRAN/Lz)*(T - Ts))*v_6*dx \
+     + THETA*dot(grad(T), grad(v_6))*dx
+
+# Define nonstandard boundary conditions using Nitsche's trick
+Fbc_e_Nitsche = -1.0/nitsche_eps*(gamma_e*KB*T +CHI*mu**2/2 - CHP_IN )*v_3*ds(0) \
+                -1.0/nitsche_eps*(gamma_e*KB*T +CHI*mu**2/2 - CHP_IN )*v_3*ds(1)
+Fbc_h_Nitsche = -1.0/nitsche_eps*(gamma_h*KB*T +CHI*mu**2/2 + CHP_IN )*v_4*ds(0) \
+                -1.0/nitsche_eps*(gamma_h*KB*T +CHI*mu**2/2 + CHP_IN )*v_4*ds(1)
+Fbc_phi_Nitsche = -1.0/nitsche_eps*(phi + (Resistor*Lz)*curr - delV \
+                                + (Resistor*Capacitor)*(phi - phi_n)/dt)*v_5*ds(0) \
+                  + (curr - Lx * Jy)*v_7*ds(0)
+
+# Residue Form
+F = Feta + Fmu + Fe + Fh + Fphi + FT + Fbc_e_Nitsche + Fbc_h_Nitsche + Fbc_phi_Nitsche
+
+# Jacobian Form
+J = derivative(F, u, du)
+
+# Functional Forms needed for doing corresponding integrals in C++ code
+# For calculating norms of components of u
+#etanorm = eta**2 * dx
+#munorm = mu**2 * dx
+#genorm = gamma_e**2 * dx
+#ghnorm = gamma_h**2 * dx
+#phinorm = phi**2 * dx
+#Tnorm = T**2 * dx
+s = Coefficient(P1)
+scalernorm = s**2 * dx
+
+phib0int = phi * ds(0)    # For calculating average of phi on boundary 0
+Tint = T * dx    # For calculating average temperature
+
+# Form for projecting functions in C++ code
+ca = TrialFunction(P1)
+v_ca = TestFunction(P1)
+a = ca*v_ca*dx
+L = dot(j_e + j_h, grad(v_ca))*dx + (j_ey + j_hy)*v_ca*ds(0) - (j_ey + j_hy)*v_ca*ds(1)
+
+
+# Export Elements and Forms
+elements = [ME, P1]
+forms = [F, J, scalernorm, phib0int, Tint, a, L]
+
